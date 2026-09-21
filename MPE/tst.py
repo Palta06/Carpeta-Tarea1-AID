@@ -1,62 +1,48 @@
 import numpy as np
 import pandas as pd
 from sklearn.metrics import confusion_matrix, f1_score
-import plot # Conecta con el archivo plot.py que armaste en el paso anterior
+import plot
 import utility as ut
+import os
 
 def sigmoid(z):
-    """Función de activación Sigmoide."""
     return 1 / (1 + np.exp(-np.clip(z, -250, 250)))
 
 def predict(X, weights, bias, threshold=0.5):
-    """Calcula la probabilidad y la convierte en una etiqueta binaria (0 o 1)."""
     z = np.dot(X, weights) + bias
     return (sigmoid(z) >= threshold).astype(int)
 
 if __name__ == "__main__":
-    print("--- Iniciando Evaluación del Modelo (MPE) ---")
-    
-    # 1. Cargar datos de Entrenamiento y Prueba desde utility.py
-    # Descomentar cuando utility.py esté programado:
-    # X_train, y_train, X_test, y_test = ut.get_mpe_features()
-    
-    # MOCK DATA: Simulados para validar la ejecución del código
-    np.random.seed(42)
-    X_train = np.random.rand(100, 5)
-    y_train = np.random.randint(0, 2, 100)
-    X_test = np.random.rand(40, 5)
-    y_test = np.random.randint(0, 2, 40)
-    # -----------------------------------------------------------
-    
-    # 2. Leer los pesos entrenados del CSV generado por train.py
+    print("--- Iniciando Evaluación MPE ---")
+    out_dir = "MPE" if os.path.exists("MPE") else "."
+
+    # 1. Cargar datos extraídos
+    X_train, X_test, y_train, y_test = ut.get_mpe_features(window_size=1200)
+
+    # 2. Cargar los pesos guardados (.npz) del Mejor Modelo (Penalizado)
     try:
-        df_coef = pd.read_csv('mpe_coeficientes_regresion.csv')
-        
-        # Seleccionamos el modelo Penalizado como el "Mejor Modelo"
-        bias_pen = df_coef['Valor_Penalizado'].iloc[0]
-        weights_pen = df_coef['Valor_Penalizado'].iloc[1:].values
-        
+        modelo = np.load(os.path.join(out_dir, 'mejor_modelo.npz'))
+        weights_pen = modelo['weights']
+        bias_pen = modelo['bias']
     except FileNotFoundError:
-        print("Error: Ejecuta python train.py primero para generar los pesos.")
+        print("Error: No se encontró mejor_modelo.npz. Ejecuta train.py primero.")
         exit()
 
-    # 3. Clasificar los datos
+    # 3. Predicciones
     y_pred_train = predict(X_train, weights_pen, bias_pen)
     y_pred_test = predict(X_test, weights_pen, bias_pen)
 
-    # 4. Calcular F-scores y exportar la Matriz de Confusión numérica (CSV)
+    # 4. Calcular métricas y exportar CSVs desglosados (Lógica del compañero)
     f1_train = f1_score(y_train, y_pred_train)
     f1_test = f1_score(y_test, y_pred_test)
-    cm_test = confusion_matrix(y_test, y_pred_test)
     
-    pd.DataFrame(cm_test).to_csv('mpe_matriz_confusion_test.csv', index=False, header=False)
-    
-    print(f"F1-Score (Train): {f1_train:.4f}")
-    print(f"F1-Score (Test): {f1_test:.4f}")
-    print("Métricas exportadas correctamente.")
+    pd.DataFrame(confusion_matrix(y_train, y_pred_train)).to_csv(os.path.join(out_dir, 'matriz_confusion_train.csv'), index=False, header=False)
+    pd.DataFrame(confusion_matrix(y_test, y_pred_test)).to_csv(os.path.join(out_dir, 'matriz_confusion_test.csv'), index=False, header=False)
+    pd.DataFrame({'F1_Train': [f1_train]}).to_csv(os.path.join(out_dir, 'fscores_train.csv'), index=False)
+    pd.DataFrame({'F1_Test': [f1_test]}).to_csv(os.path.join(out_dir, 'fscores_test.csv'), index=False)
 
-    # 5. Llamar a plot.py para generar los PNGs requeridos para tu PDF
-    plot.plot_confusion_matrix(y_test, y_pred_test, 'Matriz de Confusión (Test Penalizado)', 'mpe_matriz_confusion.png')
-    plot.plot_f_scores(f1_train, f1_test, 'mpe_f_scores.png')
-    
-    print("Gráficas renderizadas exitosamente.")
+    print(f"F1-Score Train: {f1_train:.4f} | F1-Score Test: {f1_test:.4f}")
+
+    # 5. Llamar a plot.py para generar el PDF final
+    plot.generar_pdf(y_train, y_pred_train, y_test, y_pred_test, f1_train, f1_test, out_dir)
+    print(f"¡Evaluación completada! PDF generado exitosamente en la carpeta {out_dir}/")

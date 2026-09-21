@@ -14,8 +14,8 @@ if __name__ == "__main__":
     print("INICIANDO GENERACIÓN DE ENTREGABLES - TAREA #1")
     
     # 1. Flujo de Entropía Multi-escala de Permutación (MPE)
-    ejecutar_script("MPE/train.py") # Entrena el modelo y guarda los CSV de pesos
-    ejecutar_script("MPE/tst.py")   # Evalúa el modelo y guarda las gráficas PNG
+    ejecutar_script("MPE/train.py") # Entrena, guarda pesos (.npz), hiperparámetros (.json) y convergencia (.csv)
+    ejecutar_script("MPE/tst.py")   # Evalúa métricas (.csv) y compila el reporte final (.pdf)
     
     # 2. Flujo de Entropía Multi-escala de Dispersión (MDE)
     ejecutar_script("MDE/train.py")
@@ -23,5 +23,5 @@ if __name__ == "__main__":
     
     print("\n" + "="*60)
     print("¡PIPELINE COMPLETADO CON ÉXITO!")
-    print("Tus archivos CSV y PNG están listos en las carpetas MPE y MDE.")
+    print("Tus entregables finales (PDF, JSON, NPZ y CSVs) están listos dentro de las carpetas MPE/ y MDE/.")
     print("="*60)
