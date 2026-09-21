@@ -4,6 +4,7 @@ from sklearn.metrics import confusion_matrix, f1_score
 import plot
 import utility as ut
 import os
+import json
 
 def sigmoid(z):
     return 1 / (1 + np.exp(-np.clip(z, -250, 250)))
@@ -16,10 +17,20 @@ if __name__ == "__main__":
     print("--- Iniciando Evaluación MPE ---")
     out_dir = "MPE" if os.path.exists("MPE") else "."
 
-    # 1. Cargar datos extraídos
-    X_train, X_test, y_train, y_test = ut.get_mpe_features(window_size=1200)
+    # 1. Leer parámetros dinámicamente
+    json_path = os.path.join(out_dir, 'parametros.json')
+    try:
+        with open(json_path, 'r') as f:
+            params = json.load(f)
+            w_size = params.get("window_size", 1200)
+    except FileNotFoundError:
+        print("Advertencia: No se encontró parametros.json. Usando W=1200 por defecto.")
+        w_size = 1200
 
-    # 2. Cargar los pesos guardados (.npz) del Mejor Modelo (Penalizado)
+    # 2. Cargar datos extraídos y estandarizados
+    X_train, X_test, y_train, y_test = ut.get_mpe_features(window_size=w_size)
+
+    # 3. Cargar los pesos guardados (.npz) del Mejor Modelo (Penalizado)
     try:
         modelo = np.load(os.path.join(out_dir, 'mejor_modelo.npz'))
         weights_pen = modelo['weights']
@@ -28,11 +39,11 @@ if __name__ == "__main__":
         print("Error: No se encontró mejor_modelo.npz. Ejecuta train.py primero.")
         exit()
 
-    # 3. Predicciones
+    # 4. Predicciones
     y_pred_train = predict(X_train, weights_pen, bias_pen)
     y_pred_test = predict(X_test, weights_pen, bias_pen)
 
-    # 4. Calcular métricas y exportar CSVs desglosados (Lógica del compañero)
+    # 5. Calcular métricas y exportar CSVs desglosados
     f1_train = f1_score(y_train, y_pred_train)
     f1_test = f1_score(y_test, y_pred_test)
     
@@ -43,6 +54,6 @@ if __name__ == "__main__":
 
     print(f"F1-Score Train: {f1_train:.4f} | F1-Score Test: {f1_test:.4f}")
 
-    # 5. Llamar a plot.py para generar el PDF final
+    # 6. Llamar a plot.py para generar el PDF final
     plot.generar_pdf(y_train, y_pred_train, y_test, y_pred_test, f1_train, f1_test, out_dir)
     print(f"¡Evaluación completada! PDF generado exitosamente en la carpeta {out_dir}/")

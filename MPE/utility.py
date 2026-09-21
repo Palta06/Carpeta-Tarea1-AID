@@ -1,10 +1,9 @@
 import os
+import math
 import numpy as np
 import scipy.io as sio
 from collections import Counter
 from sklearn.model_selection import train_test_split
-import math
-
 
 def get_de_time(file_path):
     mat = sio.loadmat(file_path)
@@ -36,7 +35,6 @@ def multiscale_permutation_entropy(signal, m=3, delay=1, max_scale=5):
 def get_mpe_features(window_size=1200, test_size=0.3):
     X, y = [], []
     
-    # Soporte para ejecutar desde la raíz (main.py) o desde adentro de MPE/
     base_path = "." if os.path.exists("datas_normal") else ".."
     carpetas = [(os.path.join(base_path, 'datas_normal'), 0), 
                 (os.path.join(base_path, 'datas_fallo'), 1)]
@@ -60,4 +58,16 @@ def get_mpe_features(window_size=1200, test_size=0.3):
                 
     X, y = np.array(X), np.array(y)
     print(f"Procesamiento MPE terminado. Ventanas extraídas: {len(X)}")
-    return train_test_split(X, y, test_size=test_size, random_state=42, stratify=y)
+    
+    # Partición estratificada
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=y)
+    
+    # Estandarización Z-score (Media 0, Desviación Estándar 1) basada estrictamente en Train
+    mean = np.mean(X_train, axis=0)
+    std = np.std(X_train, axis=0)
+    std[std == 0] = 1.0 # Evitar división por cero
+    
+    X_train = (X_train - mean) / std
+    X_test = (X_test - mean) / std
+    
+    return X_train, X_test, y_train, y_test
