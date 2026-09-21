@@ -1,91 +1,81 @@
 import numpy as np
 import pandas as pd
-import json
-import os
+import json, os
 import utility as ut
+from sklearn.metrics import f1_score
 
-def sigmoid(z): 
-    return 1 / (1 + np.exp(-np.clip(z, -250, 250)))
+def sigmoid(z): return 1 / (1 + np.exp(-np.clip(z, -250, 250)))
 
-def compute_loss(y, y_hat, weights, lambda_pen=0.0, penalized=False, sample_weights=None):
-    m = len(y)
-    y_hat = np.clip(y_hat, 1e-15, 1 - 1e-15)
-    if sample_weights is None:
-        sample_weights = np.ones(m)
-        
-    loss = -(1/m) * np.sum(sample_weights * (y * np.log(y_hat) + (1 - y) * np.log(1 - y_hat)))
-    if penalized: 
-        loss += (lambda_pen / (2 * m)) * np.sum(weights**2)
-    return loss
-
-def train_logistic_regression_mGD(X, y, epochs=1000, lr=0.1, beta=0.9, penalized=False, lambda_pen=0.1):
-    m, n = X.shape
-    weights, bias = np.zeros(n), 0.0
-    v_w, v_b = np.zeros(n), 0.0
-    loss_history = []
+def train_mGD(X, y, epochs=1500, lr=0.5, beta=0.9, lambda_pen=0.0):
+    m_samples, n_feats = X.shape
+    w, b = np.zeros(n_feats), 0.0
+    v_w, v_b = np.zeros(n_feats), 0.0
+    loss_hist = []
     
-    # Balance de clases dinámico
-    w_0 = m / (2.0 * np.sum(y == 0)) if np.sum(y == 0) > 0 else 1.0
-    w_1 = m / (2.0 * np.sum(y == 1)) if np.sum(y == 1) > 0 else 1.0
-    sample_weights = np.where(y == 0, w_0, w_1)
+    # Pesos de clase para combatir desbalance
+    w_0 = m_samples / (2.0 * np.sum(y == 0)) if np.sum(y==0)>0 else 1.0
+    w_1 = m_samples / (2.0 * np.sum(y == 1)) if np.sum(y==1)>0 else 1.0
+    sw = np.where(y == 0, w_0, w_1)
     
     for _ in range(epochs):
-        y_hat = sigmoid(np.dot(X, weights) + bias)
-        loss_history.append(compute_loss(y, y_hat, weights, lambda_pen, penalized, sample_weights))
+        y_hat = sigmoid(np.dot(X, w) + b)
+        y_hat_clip = np.clip(y_hat, 1e-15, 1 - 1e-15)
+        # Fórmula L2 estándar (sin penalizar sesgo)
+        loss = -(1/m_samples) * np.sum(sw * (y * np.log(y_hat_clip) + (1 - y) * np.log(1 - y_hat_clip)))
+        loss += 0.5 * lambda_pen * np.sum(w**2)
+        loss_hist.append(loss)
         
-        # Gradientes ponderados por la importancia de la clase
-        error = sample_weights * (y_hat - y)
-        dw = (1/m) * np.dot(X.T, error)
-        db = (1/m) * np.sum(error)
+        error = sw * (y_hat - y)
+        dw = (1/m_samples) * np.dot(X.T, error) + lambda_pen * w
+        db = (1/m_samples) * np.sum(error)
         
-        if penalized: 
-            dw += (lambda_pen / m) * weights
-            
         v_w = beta * v_w + (1 - beta) * dw
         v_b = beta * v_b + (1 - beta) * db
-        weights -= lr * v_w
-        bias -= lr * v_b
+        w -= lr * v_w
+        b -= lr * v_b
         
-    return weights, bias, loss_history
+    return w, b, loss_hist
 
 if __name__ == "__main__":
-    print("--- Iniciando Entrenamiento MPE ---")
+    out_dir = os.path.dirname(__file__)
+    windows = [600, 1200, 2400]
+    lambdas = [0.0, 0.001, 0.01, 0.1]
+    best_f1, best_params, best_model = -1, {}, {}
+    resumen = []
     
-    params = {
-        "window_size": 1200,
-        "epochs": 1500,
-        "learning_rate": 0.5,
-        "momentum_beta": 0.9,
-        "lambda_penalty": 0.1,
-        "optimizador": "mGD (Descenso de Gradiente con Momentum)",
-        "extraccion": "Entropía Multi-escala de Permutación (MPE: m=3, delay=1, max_scale=5)"
-    }
-    
-    X_train, X_test, y_train, y_test = ut.get_mpe_features(window_size=params["window_size"])
-    out_dir = "MPE" if os.path.exists("MPE") else "."
-    
-    with open(os.path.join(out_dir, 'parametros.json'), 'w') as f:
-        json.dump(params, f, indent=4)
+    print("Iniciando Grid Search MPE...")
+    for W in windows:
+        X_tr_raw, X_ts_raw, y_tr, y_ts = ut.get_features(window_size=W)
+        mean, std = np.mean(X_tr_raw, axis=0), np.std(X_tr_raw, axis=0)
+        std[std == 0] = 1.0
+        X_tr, X_ts = (X_tr_raw - mean) / std, (X_ts_raw - mean) / std
         
-    print("\nEntrenando modelo Normal...")
-    _, _, loss_norm = train_logistic_regression_mGD(
-        X_train, y_train, epochs=params["epochs"], lr=params["learning_rate"], beta=params["momentum_beta"], penalized=False
-    )
+        # Modelo Normal base para esta ventana
+        w_n, b_n, loss_n = train_mGD(X_tr, y_tr, lambda_pen=0.0)
+        
+        for lam in lambdas:
+            w_p, b_p, loss_p = train_mGD(X_tr, y_tr, lambda_pen=lam)
+            y_pred = (sigmoid(np.dot(X_ts, w_p) + b_p) >= 0.5).astype(int)
+            f1 = f1_score(y_ts, y_pred, average='macro')
+            resumen.append({'W': W, 'Lambda': lam, 'F1_Macro_Test': f1})
+            
+            if f1 > best_f1:
+                best_f1 = f1
+                best_params = {"metodo": "MPE", "window_size": W, "lambda_penalty": lam, "learning_rate": 0.5, "epochs": 1500}
+                best_model = {'w_p': w_p, 'b_p': b_p, 'loss_p': loss_p, 'w_n': w_n, 'b_n': b_n, 'loss_n': loss_n, 'mean': mean, 'std': std}
+
+    # Guardar Entregables
+    pd.DataFrame(resumen).to_csv(os.path.join(out_dir, 'resumen_modelos.csv'), index=False)
+    np.savez(os.path.join(out_dir, 'mejor_modelo.npz'), **best_model)
+    with open(os.path.join(out_dir, 'parametros.json'), 'w') as f: json.dump(best_params, f, indent=4)
     
-    print("Entrenando modelo Penalizado (Regularización L2)...")
-    weights_pen, bias_pen, loss_pen = train_logistic_regression_mGD(
-        X_train, y_train, epochs=params["epochs"], lr=params["learning_rate"], beta=params["momentum_beta"], 
-        penalized=True, lambda_pen=params["lambda_penalty"]
-    )
-    
-    np.savez(os.path.join(out_dir, 'mejor_modelo.npz'), weights=weights_pen, bias=bias_pen)
-    
-    # Exportar convergencia
-    df_conv = pd.DataFrame({'Epoch': np.arange(1, params["epochs"] + 1), 'Loss_Normal': loss_norm, 'Loss_Penalizada': loss_pen})
+    df_conv = pd.DataFrame({'Epoch': np.arange(1, 1501), 'Loss_Normal': best_model['loss_n'], 'Loss_Penalizada': best_model['loss_p']})
     df_conv.to_csv(os.path.join(out_dir, 'mpe_convergencia_mGD.csv'), index=False)
     
-    # Exportar coeficientes
-    df_coefs = pd.DataFrame({'Escala_MPE': [f'Escala_{i+1}' for i in range(len(weights_pen))], 'Peso_Penalizado': weights_pen})
+    df_coefs = pd.DataFrame({
+        'Coeficiente': ['Bias'] + [f'Escala_{i+1}' for i in range(len(best_model['w_p']))],
+        'Normal': [best_model['b_n']] + list(best_model['w_n']),
+        'Penalizado': [best_model['b_p']] + list(best_model['w_p'])
+    })
     df_coefs.to_csv(os.path.join(out_dir, 'mpe_coeficientes_regresion.csv'), index=False)
-    
-    print(f"\n¡Archivos MPE (.npz, .json, .csv) guardados exitosamente dentro de la carpeta {out_dir}/!")
+    print("MPE Train Completado.")

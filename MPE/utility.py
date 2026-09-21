@@ -1,15 +1,12 @@
-import os
-import math
+import os, math
 import numpy as np
 import scipy.io as sio
-from collections import Counter
-from sklearn.model_selection import train_test_split
+from scipy.signal import decimate
 
 def get_de_time(file_path):
     mat = sio.loadmat(file_path)
     for key in mat.keys():
-        if 'DE_time' in key:
-            return mat[key].flatten()
+        if 'DE_time' in key: return mat[key].flatten()
     return None
 
 def coarse_graining(signal, scale):
@@ -20,54 +17,45 @@ def coarse_graining(signal, scale):
 def permutation_entropy(signal, m=3, delay=1):
     n = len(signal)
     if n < m * delay: return 0.0
-    patterns = []
-    for i in range(n - (m - 1) * delay):
-        segment = signal[i : i + m * delay : delay]
-        patterns.append(tuple(np.argsort(segment)))
-    counts = Counter(patterns)
-    probs = np.array(list(counts.values())) / len(patterns)
-    m_factorial = math.factorial(m)
-    return -np.sum(probs * np.log2(probs + 1e-10)) / np.log2(m_factorial)
+    # Vectorización para máxima velocidad
+    idx = np.arange(n - (m - 1) * delay)
+    indices = idx[:, None] + np.arange(m) * delay
+    patterns = np.argsort(signal[indices], axis=1)
+    _, counts = np.unique(patterns, axis=0, return_counts=True)
+    probs = counts / np.sum(counts)
+    return -np.sum(probs * np.log2(probs + 1e-10)) / np.log2(math.factorial(m))
 
-def multiscale_permutation_entropy(signal, m=3, delay=1, max_scale=5):
+def multiscale_pe(signal, m=3, delay=1, max_scale=10):
     return np.array([permutation_entropy(coarse_graining(signal, s), m, delay) for s in range(1, max_scale + 1)])
 
-def get_mpe_features(window_size=1200, test_size=0.3):
-    X, y = [], []
-    
-    base_path = "." if os.path.exists("datas_normal") else ".."
+def get_features(window_size=1200, overlap=0.5, test_size=0.3):
+    X_tr, y_tr, X_ts, y_ts = [], [], [], []
+    base_path = os.path.join(os.path.dirname(__file__), '..')
     carpetas = [(os.path.join(base_path, 'datas_normal'), 0), 
                 (os.path.join(base_path, 'datas_fallo'), 1)]
     
+    step = int(window_size * (1 - overlap))
+    archivos_48k = {'97.mat', '98.mat', '99.mat', '100.mat'}
+
     for carpeta, label in carpetas:
-        print(f"Cargando datos desde: {carpeta}")
-        if not os.path.exists(carpeta): 
-            print(f"Advertencia: No se encontró {carpeta}")
-            continue
-            
+        if not os.path.exists(carpeta): continue
         for filename in os.listdir(carpeta):
             if not filename.endswith('.mat'): continue
             signal = get_de_time(os.path.join(carpeta, filename))
             if signal is None: continue
             
-            n_windows = len(signal) // window_size
-            for i in range(n_windows):
-                window = signal[i * window_size : (i + 1) * window_size]
-                X.append(multiscale_permutation_entropy(window, m=3, delay=1, max_scale=5))
-                y.append(label)
+            # Submuestreo físico crítico (48kHz -> 12kHz)
+            if filename in archivos_48k or label == 0:
+                signal = decimate(signal, 4)
                 
-    X, y = np.array(X), np.array(y)
-    print(f"Procesamiento MPE terminado. Ventanas extraídas: {len(X)}")
-    
-    # Partición estratificada
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=y)
-    
-    # Estandarización Z-score (Media 0, Desviación Estándar 1) basada estrictamente en Train
-    mean = np.mean(X_train, axis=0)
-    std = np.std(X_train, axis=0)
-    std[std == 0] = 1.0 # Evitar división por cero
-    
-    X_train = (X_train - mean) / std
-    X_test = (X_test - mean) / std
-    
-    return X_train, X_test, y_train, y_test
+            # Partición temporal para evitar fuga de datos
+            split_idx = int(len(signal) * (1 - test_size))
+            sig_train, sig_test = signal[:split_idx], signal[split_idx:]
+            
+            for sig, X_list, y_list in [(sig_train, X_tr, y_tr), (sig_test, X_ts, y_ts)]:
+                for i in range(0, len(sig) - window_size + 1, step):
+                    window = sig[i : i + window_size]
+                    X_list.append(multiscale_pe(window, m=3, delay=1, max_scale=10))
+                    y_list.append(label)
+                    
+    return np.array(X_tr), np.array(X_ts), np.array(y_tr), np.array(y_ts)

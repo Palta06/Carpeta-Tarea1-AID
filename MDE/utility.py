@@ -1,100 +1,66 @@
 import os
 import numpy as np
 import scipy.io as sio
+from scipy.signal import decimate
 from scipy.stats import norm
-from collections import Counter
-from sklearn.model_selection import train_test_split
 
 def get_de_time(file_path):
-    """Abre el archivo .mat y extrae dinámicamente la variable que contiene 'DE_time'."""
     mat = sio.loadmat(file_path)
     for key in mat.keys():
-        if 'DE_time' in key:
-            return mat[key].flatten()
+        if 'DE_time' in key: return mat[key].flatten()
     return None
 
 def coarse_graining(signal, scale):
-    """Aplica el procedimiento de 'coarse-graining' (promediado) para una escala específica."""
     n = len(signal)
-    max_len = n - (n % scale) 
+    max_len = n - (n % scale)
     return np.mean(signal[:max_len].reshape(-1, scale), axis=1)
 
-def dispersion_entropy(signal, classes=3, m=2, delay=1):
-    """Calcula la Entropía de Dispersión (DE) normalizada."""
+def dispersion_entropy(signal, classes=6, m=2, delay=1):
     n = len(signal)
-    if n < m * delay:
-        return 0.0
-    
-    # 1. Mapeo usando la Función de Distribución Acumulada Normal (NCDF)
+    if n < m * delay: return 0.0
     mu, sigma = np.mean(signal), np.std(signal)
-    if sigma == 0:
-        return 0.0
+    if sigma == 0: return 0.0
     
     y = norm.cdf(signal, loc=mu, scale=sigma)
+    z = np.clip(np.round(classes * y + 0.5), 1, classes).astype(int)
     
-    # 2. Asignar los valores a clases discretas (de 1 a 'classes')
-    z = np.round(classes * y + 0.5).astype(int)
-    z = np.clip(z, 1, classes)
+    idx = np.arange(n - (m - 1) * delay)
+    indices = idx[:, None] + np.arange(m) * delay
+    patterns = z[indices]
     
-    # 3. Extraer los patrones de dispersión
-    patterns = []
-    for i in range(n - (m - 1) * delay):
-        patterns.append(tuple(z[i : i + m * delay : delay]))
-        
-    # 4. Calcular la probabilidad de cada patrón
-    counts = Counter(patterns)
-    probs = np.array(list(counts.values())) / len(patterns)
-    
-    # 5. Calcular Entropía de Shannon Normalizada
-    max_entropy = np.log2(classes**m)
-    de = -np.sum(probs * np.log2(probs + 1e-10)) / max_entropy
-    return de
+    _, counts = np.unique(patterns, axis=0, return_counts=True)
+    probs = counts / np.sum(counts)
+    return -np.sum(probs * np.log2(probs + 1e-10)) / np.log2(classes**m)
 
-def multiscale_dispersion_entropy(signal, classes=3, m=2, delay=1, max_scale=5):
-    """Calcula la MDE obteniendo la entropía para múltiples escalas."""
-    mde_vals = []
-    for scale in range(1, max_scale + 1):
-        cg_signal = coarse_graining(signal, scale)
-        de = dispersion_entropy(cg_signal, classes, m, delay)
-        mde_vals.append(de)
-    return np.array(mde_vals)
+def multiscale_de(signal, classes=6, m=2, delay=1, max_scale=10):
+    return np.array([dispersion_entropy(coarse_graining(signal, s), classes, m, delay) for s in range(1, max_scale + 1)])
 
-def get_mde_features(data_dir='../Datos', window_size=1200, test_size=0.3):
-    """
-    Función principal que orquesta la carga, partición y cálculo de MDE.
-    Devuelve los conjuntos listos para alimentar la Regresión Logística.
-    """
-    X = []
-    y = []
+def get_features(window_size=1200, overlap=0.5, test_size=0.3):
+    X_tr, y_tr, X_ts, y_ts = [], [], [], []
+    base_path = os.path.join(os.path.dirname(__file__), '..')
+    carpetas = [(os.path.join(base_path, 'datas_normal'), 0), 
+                (os.path.join(base_path, 'datas_fallo'), 1)]
     
-    if not os.path.exists(data_dir):
-        data_dir = 'Datos'
-        
-    print(f"Cargando archivos .mat desde la carpeta: {data_dir} para calcular MDE")
-    
-    archivos = [f for f in os.listdir(data_dir) if f.endswith('.mat')]
-    
-    for filename in archivos:
-        filepath = os.path.join(data_dir, filename)
-        signal = get_de_time(filepath)
-        
-        if signal is None:
-            continue
+    step = int(window_size * (1 - overlap))
+    archivos_48k = {'97.mat', '98.mat', '99.mat', '100.mat'}
+
+    for carpeta, label in carpetas:
+        if not os.path.exists(carpeta): continue
+        for filename in os.listdir(carpeta):
+            if not filename.endswith('.mat'): continue
+            signal = get_de_time(os.path.join(carpeta, filename))
+            if signal is None: continue
             
-        # Asignar la etiqueta: 0 si es Normal, 1 si es falla
-        label = 0 if 'Normal' in filename else 1
-        
-        # Particionar la señal en ventanas de tamaño W
-        n_windows = len(signal) // window_size
-        for i in range(n_windows):
-            window = signal[i * window_size : (i + 1) * window_size]
-            features = multiscale_dispersion_entropy(window, classes=3, m=2, delay=1, max_scale=5)
-            X.append(features)
-            y.append(label)
+            if filename in archivos_48k or label == 0:
+                signal = decimate(signal, 4)
+                
+            split_idx = int(len(signal) * (1 - test_size))
+            sig_train, sig_test = signal[:split_idx], signal[split_idx:]
             
-    X = np.array(X)
-    y = np.array(y)
-    
-    print(f"Procesamiento MDE terminado. Ventanas totales: {len(X)}")
-    
-    return train_test_split(X, y, test_size=test_size, random_state=42, stratify=y)
+            for sig, X_list, y_list in [(sig_train, X_tr, y_tr), (sig_test, X_ts, y_ts)]:
+                for i in range(0, len(sig) - window_size + 1, step):
+                    window = sig[i : i + window_size]
+                    X_list.append(multiscale_de(window, classes=6, m=2, delay=1, max_scale=10))
+                    y_list.append(label)
+                    
+    return np.array(X_tr), np.array(X_ts), np.array(y_tr), np.array(y_ts)

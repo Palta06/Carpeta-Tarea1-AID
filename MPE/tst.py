@@ -1,59 +1,34 @@
 import numpy as np
 import pandas as pd
-from sklearn.metrics import confusion_matrix, f1_score
+from sklearn.metrics import confusion_matrix, classification_report
 import plot
 import utility as ut
-import os
-import json
+import os, json
 
-def sigmoid(z):
-    return 1 / (1 + np.exp(-np.clip(z, -250, 250)))
-
-def predict(X, weights, bias, threshold=0.5):
-    z = np.dot(X, weights) + bias
-    return (sigmoid(z) >= threshold).astype(int)
+def sigmoid(z): return 1 / (1 + np.exp(-np.clip(z, -250, 250)))
 
 if __name__ == "__main__":
-    print("--- Iniciando Evaluación MPE ---")
-    out_dir = "MPE" if os.path.exists("MPE") else "."
-
-    # 1. Leer parámetros dinámicamente
-    json_path = os.path.join(out_dir, 'parametros.json')
-    try:
-        with open(json_path, 'r') as f:
-            params = json.load(f)
-            w_size = params.get("window_size", 1200)
-    except FileNotFoundError:
-        print("Advertencia: No se encontró parametros.json. Usando W=1200 por defecto.")
-        w_size = 1200
-
-    # 2. Cargar datos extraídos y estandarizados
-    X_train, X_test, y_train, y_test = ut.get_mpe_features(window_size=w_size)
-
-    # 3. Cargar los pesos guardados (.npz) del Mejor Modelo (Penalizado)
-    try:
-        modelo = np.load(os.path.join(out_dir, 'mejor_modelo.npz'))
-        weights_pen = modelo['weights']
-        bias_pen = modelo['bias']
-    except FileNotFoundError:
-        print("Error: No se encontró mejor_modelo.npz. Ejecuta train.py primero.")
-        exit()
-
-    # 4. Predicciones
-    y_pred_train = predict(X_train, weights_pen, bias_pen)
-    y_pred_test = predict(X_test, weights_pen, bias_pen)
-
-    # 5. Calcular métricas y exportar CSVs desglosados
-    f1_train = f1_score(y_train, y_pred_train)
-    f1_test = f1_score(y_test, y_pred_test)
+    out_dir = os.path.dirname(__file__)
+    with open(os.path.join(out_dir, 'parametros.json'), 'r') as f: params = json.load(f)
     
-    pd.DataFrame(confusion_matrix(y_train, y_pred_train)).to_csv(os.path.join(out_dir, 'matriz_confusion_train.csv'), index=False, header=False)
-    pd.DataFrame(confusion_matrix(y_test, y_pred_test)).to_csv(os.path.join(out_dir, 'matriz_confusion_test.csv'), index=False, header=False)
-    pd.DataFrame({'F1_Train': [f1_train]}).to_csv(os.path.join(out_dir, 'fscores_train.csv'), index=False)
-    pd.DataFrame({'F1_Test': [f1_test]}).to_csv(os.path.join(out_dir, 'fscores_test.csv'), index=False)
+    # Cargar matriz de transformación del train
+    modelo = np.load(os.path.join(out_dir, 'mejor_modelo.npz'))
+    mean, std = modelo['mean'], modelo['std']
+    w_p, b_p = modelo['w_p'], modelo['b_p']
+    
+    X_tr_raw, X_ts_raw, y_tr, y_ts = ut.get_features(window_size=params["window_size"])
+    X_tr, X_ts = (X_tr_raw - mean) / std, (X_ts_raw - mean) / std
+    
+    y_p_tr = (sigmoid(np.dot(X_tr, w_p) + b_p) >= 0.5).astype(int)
+    y_p_ts = (sigmoid(np.dot(X_ts, w_p) + b_p) >= 0.5).astype(int)
 
-    print(f"F1-Score Train: {f1_train:.4f} | F1-Score Test: {f1_test:.4f}")
-
-    # 6. Llamar a plot.py para generar el PDF final
-    plot.generar_pdf(y_train, y_pred_train, y_test, y_pred_test, f1_train, f1_test, out_dir)
-    print(f"¡Evaluación completada! PDF generado exitosamente en la carpeta {out_dir}/")
+    # Entregables con encabezados claros
+    pd.DataFrame(confusion_matrix(y_tr, y_p_tr), columns=['Pred_Normal','Pred_Fallo'], index=['Real_Normal','Real_Fallo']).to_csv(os.path.join(out_dir, 'matriz_confusion_train.csv'))
+    pd.DataFrame(confusion_matrix(y_ts, y_p_ts), columns=['Pred_Normal','Pred_Fallo'], index=['Real_Normal','Real_Fallo']).to_csv(os.path.join(out_dir, 'matriz_confusion_test.csv'))
+    
+    rep_tr = pd.DataFrame(classification_report(y_tr, y_p_tr, output_dict=True)).T
+    rep_ts = pd.DataFrame(classification_report(y_ts, y_p_ts, output_dict=True)).T
+    rep_tr.to_csv(os.path.join(out_dir, 'fscores_train.csv'))
+    rep_ts.to_csv(os.path.join(out_dir, 'fscores_test.csv'))
+    
+    plot.generar_pdf(y_tr, y_p_tr, y_ts, y_p_ts, rep_tr.loc['macro avg','f1-score'], rep_ts.loc['macro avg','f1-score'], out_dir)
